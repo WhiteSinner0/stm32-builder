@@ -1,0 +1,177 @@
+name: Build STM32 Firmware
+description: Builds STM32 firmware for CMake or CubeIDE Makefile projects and generates memory report
+author: YOUR_ORG
+
+inputs:
+  build_configuration:
+    description: "Build configuration: Debug, Release, or Both"
+    required: false
+    default: "Both"
+  build_system:
+    description: "Build system: auto, cmake, makefile, none (none = skip build, only parse/report)"
+    required: false
+    default: "auto"
+  env_path:
+    description: "Path to build.env file"
+    required: false
+    default: "./build.env"
+  parse_only:
+    description: "Only parse build.env and project files, do not build"
+    required: false
+    default: "false"
+
+outputs:
+  firmware_path:
+    description: "Path to built firmware (without extension)"
+    value: ${{ steps.stage.outputs.fw_path }}
+  firmware_name:
+    description: "Firmware filename (without extension)"
+    value: ${{ steps.meta.outputs.fw_filename }}
+  version:
+    description: "Firmware version string (e.g. v1.2.3)"
+    value: ${{ steps.meta.outputs.version }}
+  version_major:
+    description: "Firmware major version"
+    value: ${{ steps.meta.outputs.version_major }}
+  version_minor:
+    description: "Firmware minor version"
+    value: ${{ steps.meta.outputs.version_minor }}
+  version_patch:
+    description: "Firmware patch version"
+    value: ${{ steps.meta.outputs.version_patch }}
+  project_name:
+    description: "Project name resolved from CMakeLists.txt / .project / .ioc"
+    value: ${{ steps.meta.outputs.project_name }}
+  board_name:
+    description: "Board name from build.env"
+    value: ${{ steps.meta.outputs.board_name }}
+  board_version:
+    description: "Board version from build.env"
+    value: ${{ steps.meta.outputs.board_version }}
+  resolved_build_system:
+    description: "Build system actually used (cmake, makefile, or none)"
+    value: ${{ steps.detect.outputs.system }}
+  report_path:
+    description: "Path to generated memory_report.md"
+    value: ${{ steps.analyze.outputs.report_path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Parse build.env and validate project names
+      id: meta
+      shell: bash
+      env:
+        ENV_PATH: ${{ inputs.env_path }}
+        BUILD_TYPE: ${{ inputs.build_configuration }}
+        GIT_COMMIT_HASH: ${{ github.sha }}
+      run: |
+        PARSE_FLAG=""
+        if [ "${{ inputs.parse_only }}" = "true" ]; then PARSE_FLAG="--parse-only"; fi
+        python3 /opt/scripts/build_env_parser.py --env "${{ inputs.env_path }}" $PARSE_FLAG
+
+    - name: Detect build system
+      id: detect
+      shell: bash
+      run: |
+        requested="${{ inputs.build_system }}"
+        system="none"
+
+        if [ "$requested" = "cmake" ]; then
+          if [ -f "CMakeLists.txt" ]; then
+            system="cmake"
+          else
+            echo "::error::build_system=cmake requested but CMakeLists.txt not found"
+            exit 1
+          fi
+        elif [ "$requested" = "makefile" ]; then
+          if [ -f ".cproject" ] || [ -f "Makefile" ]; then
+            system="makefile"
+          else
+            echo "::error::build_system=makefile requested but .cproject/Makefile not found"
+            exit 1
+          fi
+        elif [ "$requested" = "none" ]; then
+          system="none"
+        else
+          if [ -f "CMakeLists.txt" ]; then
+            system="cmake"
+          elif [ -f ".cproject" ] || [ -f "Makefile" ]; then
+            system="makefile"
+          else
+            echo "::error::no supported build system found (expected CMakeLists.txt, .cproject or Makefile). Set build_system input explicitly if this is intentional."
+            exit 1
+          fi
+        fi
+
+        echo "detected build system: $system"
+        echo "system=$system" >> "$GITHUB_OUTPUT"
+
+    - name: Build (CMake)
+      if: inputs.parse_only == 'false' && steps.detect.outputs.system == 'cmake'
+      shell: bash
+      env:
+        GIT_COMMIT_HASH: ${{ github.sha }}
+      run: |
+        cfg="${{ inputs.build_configuration }}"
+        build_cmake() {
+          cmake --preset "$1" -DGIT_COMMIT_HASH="$GIT_COMMIT_HASH"
+          cmake --build --preset "$1" --parallel
+        }
+        if [ "$cfg" = "Debug" ] || [ "$cfg" = "Both" ]; then build_cmake Debug; fi
+        if [ "$cfg" = "Release" ] || [ "$cfg" = "Both" ]; then build_cmake Release; fi
+
+    - name: Build (Makefile)
+      if: inputs.parse_only == 'false' && steps.detect.outputs.system == 'makefile'
+      shell: bash
+      run: |
+        cfg="${{ inputs.build_configuration }}"
+        build_make() {
+          if [ -d "$1" ] && [ -f "$1/Makefile" ]; then
+            make -j"$(nproc)" all -C "./$1"
+          elif [ -f "Makefile" ]; then
+            make -j"$(nproc)" all
+          else
+            echo "::error::no Makefile found for configuration $1"
+            exit 1
+          fi
+        }
+        if [ "$cfg" = "Debug" ] || [ "$cfg" = "Both" ]; then build_make Debug; fi
+        if [ "$cfg" = "Release" ] || [ "$cfg" = "Both" ]; then build_make Release; fi
+
+    - name: Stage and rename artifacts
+      if: inputs.parse_only == 'false' && steps.detect.outputs.system != 'none'
+      id: stage
+      shell: bash
+      env:
+        FW_FILENAME: ${{ steps.meta.outputs.fw_filename }}
+        BUILD_CFG: ${{ inputs.build_configuration }}
+      run: |
+        stage() {
+          local src_dir=$1 suffix=$2
+          [ -d "$src_dir" ] || return 0
+          local base="${FW_FILENAME%-*}-${suffix}"
+          for ext in elf bin hex map; do
+            f=$(find "$src_dir" -maxdepth 3 -name "*.${ext}" | head -1)
+            [ -n "$f" ] && cp "$f" "${base}.${ext}" || true
+          done
+        }
+        if [ "$BUILD_CFG" = "Debug" ] || [ "$BUILD_CFG" = "Both" ]; then
+          stage build/Debug Debug
+          stage Debug Debug
+        fi
+        if [ "$BUILD_CFG" = "Release" ] || [ "$BUILD_CFG" = "Both" ]; then
+          stage build/Release Release
+          stage Release Release
+        fi
+        echo "fw_path=${FW_FILENAME}" >> "$GITHUB_OUTPUT"
+
+    - name: Generate memory report
+      if: inputs.parse_only == 'false' && steps.detect.outputs.system != 'none'
+      id: analyze
+      shell: bash
+      env:
+        ENV_PATH: ${{ inputs.env_path }}
+        BUILD_TYPE: ${{ inputs.build_configuration }}
+        GIT_COMMIT_HASH: ${{ github.sha }}
+      run: python3 /opt/scripts/map_analyzer.py .

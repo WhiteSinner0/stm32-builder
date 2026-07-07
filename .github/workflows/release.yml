@@ -1,0 +1,86 @@
+name: Release on tag
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  validate:
+    name: Validate tag vs build.env
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/OWNER/stm32-builder:latest
+    outputs:
+      proceed: ${{ steps.check.outputs.result }}
+      version: ${{ steps.parse.outputs.version }}
+      version_major: ${{ steps.parse.outputs.version_major }}
+      version_minor: ${{ steps.parse.outputs.version_minor }}
+      version_patch: ${{ steps.parse.outputs.version_patch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Parse build.env
+        id: parse
+        uses: WhiteSinner0/stm32-builder/action@main
+        with:
+          parse_only: "true"
+          env_path: ./build.env
+
+      - name: Validate tag on main and version match
+        id: check
+        run: |
+          RESULT=true
+          if ! git merge-base --is-ancestor "${{ github.ref_name }}" origin/main 2>/dev/null; then
+            echo "tag not on main branch"
+            RESULT=false
+          fi
+          TAG="${{ github.ref_name }}"
+          TAG_MAJOR=$(echo "$TAG" | cut -d'.' -f1 | tr -d 'v')
+          TAG_MINOR=$(echo "$TAG" | cut -d'.' -f2)
+          TAG_PATCH=$(echo "$TAG" | cut -d'.' -f3)
+          [ "$TAG_MAJOR" = "${{ steps.parse.outputs.version_major }}" ] || { echo "major version mismatch: tag=$TAG_MAJOR env=${{ steps.parse.outputs.version_major }}"; RESULT=false; }
+          [ "$TAG_MINOR" = "${{ steps.parse.outputs.version_minor }}" ] || { echo "minor version mismatch: tag=$TAG_MINOR env=${{ steps.parse.outputs.version_minor }}"; RESULT=false; }
+          [ "$TAG_PATCH" = "${{ steps.parse.outputs.version_patch }}" ] || { echo "patch version mismatch: tag=$TAG_PATCH env=${{ steps.parse.outputs.version_patch }}"; RESULT=false; }
+          echo "result=$RESULT" >> "$GITHUB_OUTPUT"
+
+  build-and-release:
+    name: Build and publish release
+    runs-on: ubuntu-latest
+    needs: validate
+    if: needs.validate.outputs.proceed == 'true'
+    permissions:
+      contents: write
+    container:
+      image: ghcr.io/WhiteSinner0/stm32-builder:latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build Release firmware
+        id: build
+        uses: WhiteSinner0/stm32-builder/action@main
+        with:
+          build_configuration: Release
+          env_path: ./build.env
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "${{ steps.build.outputs.project_name }} ${{ github.ref_name }}"
+          body_path: memory_report.md
+          draft: true
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            *.elf
+            *.bin
+            *.hex
+            *.map
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
