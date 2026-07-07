@@ -24,7 +24,7 @@ jobs:
 
       - name: Parse build.env
         id: parse
-        uses: WhiteSinner0/stm32-builder/action@main
+        uses: whitesinner0/stm32-builder/action@main
         with:
           parse_only: "true"
           env_path: ./build.env
@@ -54,7 +54,7 @@ jobs:
     permissions:
       contents: write
     container:
-      image: ghcr.io/WhiteSinner0/stm32-builder:latest
+      image: ghcr.io/whitesinner0/stm32-builder:latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -62,7 +62,7 @@ jobs:
 
       - name: Build Release firmware
         id: build
-        uses: WhiteSinner0/stm32-builder/action@main
+        uses: whitesinner0/stm32-builder/action@main
         with:
           build_configuration: Release
           env_path: ./build.env
