@@ -22,6 +22,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Fix git ownership
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: Parse build.env
         id: parse
         uses: whitesinner0/stm32-builder/action@main
@@ -32,19 +35,32 @@ jobs:
       - name: Validate tag on main and version match
         id: check
         run: |
-          RESULT=true
-          if ! git merge-base --is-ancestor "${{ github.ref_name }}" origin/main 2>/dev/null; then
-            echo "tag not on main branch"
-            RESULT=false
+          # If the tag is not directly on main, or the version numbers do not match, do not proceed
+          RESULT="true"
+          if ! git merge-base --is-ancestor ${{ github.ref_name }} origin/main; then
+            RESULT="false"
+            echo "Tag is not directly on main branch"
           fi
-          TAG="${{ github.ref_name }}"
-          TAG_MAJOR=$(echo "$TAG" | cut -d'.' -f1 | tr -d 'v')
-          TAG_MINOR=$(echo "$TAG" | cut -d'.' -f2)
-          TAG_PATCH=$(echo "$TAG" | cut -d'.' -f3)
-          [ "$TAG_MAJOR" = "${{ steps.parse.outputs.version_major }}" ] || { echo "major version mismatch: tag=$TAG_MAJOR env=${{ steps.parse.outputs.version_major }}"; RESULT=false; }
-          [ "$TAG_MINOR" = "${{ steps.parse.outputs.version_minor }}" ] || { echo "minor version mismatch: tag=$TAG_MINOR env=${{ steps.parse.outputs.version_minor }}"; RESULT=false; }
-          [ "$TAG_PATCH" = "${{ steps.parse.outputs.version_patch }}" ] || { echo "patch version mismatch: tag=$TAG_PATCH env=${{ steps.parse.outputs.version_patch }}"; RESULT=false; }
-          echo "result=$RESULT" >> "$GITHUB_OUTPUT"
+
+          TAG_VERSION_MAJOR=$(echo "${{ github.ref_name }}" | cut -d'.' -f1 | tr -d 'v')
+          if [ "$TAG_VERSION_MAJOR" != "${{ steps.parse.outputs.version_major }}" ]; then
+            RESULT="false"
+            echo "Tag major version does not match the firmware major version"
+          fi
+          
+          TAG_VERSION_MINOR=$(echo "${{ github.ref_name }}" | cut -d'.' -f2)
+          if [ "$TAG_VERSION_MINOR" != "${{ steps.parse.outputs.version_minor }}" ]; then
+            RESULT="false"
+            echo "Tag minor version does not match the firmware minor version"
+          fi
+
+          TAG_VERSION_PATCH=$(echo "${{ github.ref_name }}" | cut -d'.' -f3)
+          if [ "$TAG_VERSION_PATCH" != "${{ steps.parse.outputs.version_patch }}" ]; then
+            RESULT="false"
+            echo "Tag patch version does not match the firmware patch version"
+          fi
+
+          echo "result=$RESULT" >> $GITHUB_OUTPUT
 
   build-and-release:
     name: Build and publish release
