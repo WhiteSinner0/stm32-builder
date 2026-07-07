@@ -121,18 +121,46 @@ runs:
         if [ "$cfg" = "Debug" ] || [ "$cfg" = "Both" ]; then build_cmake Debug; fi
         if [ "$cfg" = "Release" ] || [ "$cfg" = "Both" ]; then build_cmake Release; fi
 
+    - name: Generate Makefile from .cproject (CubeIDE projects without committed Makefile)
+      if: inputs.parse_only == 'false' && steps.detect.outputs.system == 'makefile'
+      shell: bash
+      run: |
+        cfg="${{ inputs.build_configuration }}"
+        needs_gen=false
+
+        # check if any expected Makefile is missing
+        if [ "$cfg" = "Debug" ] || [ "$cfg" = "Both" ]; then
+          [ ! -f "Debug/Makefile" ] && needs_gen=true
+        fi
+        if [ "$cfg" = "Release" ] || [ "$cfg" = "Both" ]; then
+          [ ! -f "Release/Makefile" ] && needs_gen=true
+        fi
+        # also skip generation if root Makefile exists (plain CubeMX project)
+        [ -f "Makefile" ] && needs_gen=false
+
+        if [ "$needs_gen" = "true" ]; then
+          if [ -f ".cproject" ]; then
+            echo "No Makefile found — generating from .cproject"
+            python3 /opt/scripts/cproject_to_makefile.py --config "$cfg" --project-dir .
+          else
+            echo "::error::No Makefile and no .cproject found. Cannot build."
+            exit 1
+          fi
+        fi
+
     - name: Build (Makefile)
       if: inputs.parse_only == 'false' && steps.detect.outputs.system == 'makefile'
       shell: bash
       run: |
         cfg="${{ inputs.build_configuration }}"
         build_make() {
-          if [ -d "$1" ] && [ -f "$1/Makefile" ]; then
-            make -j"$(nproc)" all -C "./$1"
+          local dir="$1"
+          if [ -d "$dir" ] && [ -f "$dir/Makefile" ]; then
+            make -j"$(nproc)" all -C "./$dir"
           elif [ -f "Makefile" ]; then
             make -j"$(nproc)" all
           else
-            echo "::error::no Makefile found for configuration $1"
+            echo "::error::no Makefile found for configuration $dir"
             exit 1
           fi
         }
