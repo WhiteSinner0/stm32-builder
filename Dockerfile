@@ -18,7 +18,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY scripts/map_analyzer.py /opt/scripts/map_analyzer.py
 COPY scripts/build_env_parser.py /opt/scripts/build_env_parser.py
-RUN chmod +x /opt/scripts/map_analyzer.py /opt/scripts/build_env_parser.py
+COPY scripts/cproject_to_makefile.py /opt/scripts/cproject_to_makefile.py
+RUN chmod +x /opt/scripts/map_analyzer.py /opt/scripts/build_env_parser.py /opt/scripts/cproject_to_makefile.py
 
 ENV PATH="/opt/scripts:${PATH}"
 
