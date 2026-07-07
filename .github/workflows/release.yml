@@ -10,7 +10,7 @@ jobs:
     name: Validate tag vs build.env
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/OWNER/stm32-builder:latest
+      image: ghcr.io/whitesinner0/stm32-builder:latest
     outputs:
       proceed: ${{ steps.check.outputs.result }}
       version: ${{ steps.parse.outputs.version }}

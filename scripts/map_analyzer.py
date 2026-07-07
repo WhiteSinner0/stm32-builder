@@ -10,6 +10,8 @@ LINE1 = re.compile(r'^\s*(\.\S+)\s*$')
 LINE2 = re.compile(r'^\s*0x([0-9A-Fa-f]+)\s+0x([0-9A-Fa-f]+)\s+(\S+\.o(?:bj)?)\s*$')
 INLINE = re.compile(r'^\s*(\.\S+)\s+0x([0-9A-Fa-f]+)\s+0x([0-9A-Fa-f]+)\s+(\S+\.o(?:bj)?)\s*$')
 
+EXCLUDE_DIR_PARTS = {"build", "Debug", "Release", "CMakeFiles"}
+
 def parse_regions(text):
     regions = {}
     in_block = False
@@ -81,7 +83,7 @@ def bar(pct, width=20):
     filled = int(min(pct, 100) / 100 * width)
     return "#" * filled + "-" * (width - filled)
 
-def analyze_map(path, meta=None):
+def analyze_map(path, label, meta=None):
     with open(path, errors="ignore") as f:
         text = f.read()
 
@@ -94,7 +96,7 @@ def analyze_map(path, meta=None):
             regions[region]["used"] += size
 
     lines = []
-    lines.append(f"## {os.path.basename(path)}")
+    lines.append(f"## {label}")
     lines.append("")
 
     if meta:
@@ -124,7 +126,7 @@ def analyze_map(path, meta=None):
     lines.append("")
     return "\n".join(lines)
 
-def build_meta_from_env():
+def build_meta_from_env(build_type_override=None):
     env_path = os.environ.get("ENV_PATH", "./build.env")
     meta = {}
     if not os.path.isfile(env_path):
@@ -146,26 +148,52 @@ def build_meta_from_env():
         result["Firmware version"] = f"v{fw}"
     if os.environ.get("GIT_COMMIT_HASH"):
         result["Commit"] = os.environ["GIT_COMMIT_HASH"]
-    if os.environ.get("BUILD_TYPE"):
-        result["Build type"] = os.environ["BUILD_TYPE"]
+    result["Build type"] = build_type_override or os.environ.get("BUILD_TYPE", "")
     return result
+
+def dedup_maps(root_dirs):
+    seen_content_hash = {}
+    result = []
+    for root in root_dirs:
+        for path in sorted(glob.glob(f"{root}/**/*.map", recursive=True)) + sorted(glob.glob(f"{root}/*.map")):
+            path = os.path.normpath(path)
+            if any(part in EXCLUDE_DIR_PARTS for part in path.split(os.sep)):
+                continue
+            try:
+                size = os.path.getsize(path)
+                mtime = os.path.getmtime(path)
+            except OSError:
+                continue
+            key = (size, round(mtime, 0))
+            if key in seen_content_hash:
+                continue
+            seen_content_hash[key] = path
+            result.append(path)
+    return sorted(set(result))
+
+def label_for(path):
+    name = os.path.basename(path)
+    if "Debug" in path:
+        cfg = "Debug"
+    elif "Release" in path:
+        cfg = "Release"
+    else:
+        cfg = ""
+    return f"{name} ({cfg})" if cfg else name
 
 def main():
     search_paths = sys.argv[1:] if len(sys.argv) > 1 else ["."]
-    maps = []
-    for p in search_paths:
-        maps.extend(glob.glob(f"{p}/**/*.map", recursive=True))
-        maps.extend(glob.glob(f"{p}/*.map"))
-    maps = sorted(set(maps))
+    maps = dedup_maps(search_paths)
 
     if not maps:
         print("No .map files found, memory_report.md not generated", file=sys.stderr)
         sys.exit(0)
 
-    meta = build_meta_from_env()
     out = ["# Memory Report", ""]
     for m in maps:
-        out.append(analyze_map(m, meta))
+        cfg = "Debug" if "Debug" in m else ("Release" if "Release" in m else None)
+        meta = build_meta_from_env(build_type_override=cfg)
+        out.append(analyze_map(m, label_for(m), meta))
 
     report = "\n".join(out)
 

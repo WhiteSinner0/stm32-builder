@@ -21,15 +21,37 @@ def check_required(env):
     missing = [k for k in REQUIRED_KEYS if k not in env]
     return missing
 
+def read_cmake_variables(text):
+    variables = {}
+    for m in re.finditer(r'set\(\s*(\w+)\s+"?([^")\s]+)"?\s*\)', text):
+        variables[m.group(1)] = m.group(2)
+    return variables
+
+def resolve_placeholder(value, variables, depth=0):
+    if depth > 5:
+        return value
+    m = re.match(r'^\$\{(\w+)\}$', value)
+    if m:
+        var_name = m.group(1)
+        if var_name in variables:
+            return resolve_placeholder(variables[var_name], variables, depth + 1)
+        return value
+    return value
+
 def get_project_name_cmake():
     if not os.path.isfile("CMakeLists.txt"):
         return None
     with open("CMakeLists.txt") as f:
-        for line in f:
-            m = re.search(r'project\(\s*([^\s)]+)', line)
-            if m:
-                return m.group(1)
-    return None
+        text = f.read()
+    variables = read_cmake_variables(text)
+    m = re.search(r'project\(\s*([^\s)]+)', text)
+    if not m:
+        return None
+    raw_name = m.group(1)
+    resolved = resolve_placeholder(raw_name, variables)
+    if resolved.startswith("${") or resolved.startswith("$"):
+        return None
+    return resolved
 
 def get_project_name_ioc():
     for path in glob.glob("*.ioc") + glob.glob("*/*.ioc"):
@@ -68,10 +90,12 @@ def check_name_consistency(env):
         sys.exit(1)
 
     project_name = list(unique)[0] if unique else board
+    if not project_name:
+        print("ERROR: could not resolve project name from CMakeLists.txt, .ioc, .project or build.env BOARD_NAME", file=sys.stderr)
+        sys.exit(1)
     return project_name, names
 
 def firmware_filename(env, project_name, commit_hash, build_type):
-    board = env.get("BOARD_NAME", project_name)
     board_ver = env.get("BOARD_VERSION", "")
     fw_major = env.get("FW_VERSION_MAJOR", "0")
     fw_minor = env.get("FW_VERSION_MINOR", "0")
