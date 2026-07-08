@@ -138,31 +138,39 @@ class CProjectConfig:
 
     def collect_sources(self):
         """
-        Returns (c_sources, asm_sources) as lists of paths relative to project root
-        (e.g. 'Core/Src/main.c'), NOT relative to the build dir.
-        We keep full relative paths so OBJECTS and vpath stay consistent.
+        Returns (c_sources, asm_lower, asm_upper) — paths relative to project root.
+        asm_lower: files ending in .s
+        asm_upper: files ending in .S
+        Kept separate so OBJECTS substitution is correct:
+          $(ASM_LOWER:.s=.o) and $(ASM_UPPER:.S=.o) don't cross-contaminate.
         """
-        c_srcs, asm_srcs = [], []
+        c_srcs = []
+        asm_lower = []  # .s
+        asm_upper = []  # .S
         for sd in self.source_dirs:
             src_path = self.project_dir / sd
             for f in sorted(src_path.rglob("*.c")):
                 rel = os.path.relpath(f, self.project_dir).replace("\\", "/")
                 c_srcs.append(rel)
-            for pat in ("*.s", "*.S"):
-                for f in sorted(src_path.rglob(pat)):
-                    rel = os.path.relpath(f, self.project_dir).replace("\\", "/")
-                    asm_srcs.append(rel)
-        return c_srcs, asm_srcs
+            for f in sorted(src_path.rglob("*.s")):
+                rel = os.path.relpath(f, self.project_dir).replace("\\", "/")
+                asm_lower.append(rel)
+            for f in sorted(src_path.rglob("*.S")):
+                rel = os.path.relpath(f, self.project_dir).replace("\\", "/")
+                asm_upper.append(rel)
+        return c_srcs, asm_lower, asm_upper
 
     def generate(self):
-        c_srcs, asm_srcs = self.collect_sources()
+        c_srcs, asm_lower, asm_upper = self.collect_sources()
+        all_asm = asm_lower + asm_upper
+
         inc_flags = " ".join("-I" + i for i in self.includes)
         def_flags = " ".join("-D" + d for d in self.defines)
         ld_script = self.linker_script or ("../" + self.proj_name + ".ld")
 
-        # collect unique parent dirs for vpath (relative to project root -> prefix ../)
+        # vpath: unique parent dirs of each source file (from project root, prefix ../)
         c_dirs = sorted(set("../" + os.path.dirname(s) for s in c_srcs))
-        asm_dirs = sorted(set("../" + os.path.dirname(s) for s in asm_srcs if os.path.dirname(s)))
+        asm_dirs = sorted(set("../" + os.path.dirname(s) for s in all_asm if os.path.dirname(s)))
 
         L = []
         a = L.append
@@ -195,19 +203,28 @@ class CProjectConfig:
         a("LDFLAGS = $(CPU) -specs=nano.specs -T$(LDSCRIPT) \\")
         a("          -lc -lm -lnosys -Wl,-Map=$(BUILD_DIR)/$(TARGET).map,--cref -Wl,--gc-sections")
         a("")
-        a("# Source files (relative to project root)")
+        a("# C sources")
         for src in c_srcs:
             a("C_SOURCES += " + src)
-        for src in asm_srcs:
-            a("ASM_SOURCES += " + src)
         a("")
-        # OBJECTS: notdir strips path, only filename.o in BUILD_DIR
+        # separate .s and .S so make substitution works correctly
+        if asm_lower:
+            a("# ASM sources (.s)")
+            for src in asm_lower:
+                a("ASM_SOURCES_S += " + src)
+            a("")
+        if asm_upper:
+            a("# ASM sources (.S)")
+            for src in asm_upper:
+                a("ASM_SOURCES_UPPER += " + src)
+            a("")
         a("OBJECTS  = $(addprefix $(BUILD_DIR)/,$(notdir $(C_SOURCES:.c=.o)))")
-        a("OBJECTS += $(addprefix $(BUILD_DIR)/,$(notdir $(ASM_SOURCES:.s=.o)))")
-        a("OBJECTS += $(addprefix $(BUILD_DIR)/,$(notdir $(ASM_SOURCES:.S=.o)))")
+        if asm_lower:
+            a("OBJECTS += $(addprefix $(BUILD_DIR)/,$(notdir $(ASM_SOURCES_S:.s=.o)))")
+        if asm_upper:
+            a("OBJECTS += $(addprefix $(BUILD_DIR)/,$(notdir $(ASM_SOURCES_UPPER:.S=.o)))")
         a("")
-        # vpath: make must find the actual source files by basename
-        # Makefile runs from BUILD_DIR, so prefix with ../
+        # vpath: point make to actual source directories
         for d in c_dirs:
             a("vpath %.c " + d)
         for d in asm_dirs:
